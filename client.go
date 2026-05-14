@@ -39,7 +39,7 @@ import (
 )
 
 // Version is the released semver of this client.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // DefaultBaseURL is the production Engram API endpoint.
 const DefaultBaseURL = "https://api.lumetra.io"
@@ -242,16 +242,24 @@ func (c *Client) DeleteMemory(ctx context.Context, memoryID, bucket string) erro
 }
 
 // ClearMemories removes every memory in bucket. Destructive.
-func (c *Client) ClearMemories(ctx context.Context, bucket string) error {
+//
+// Returns the count of memories actually deleted under ClearedCount —
+// the server reports this in the response body and we now surface it.
+// Breaking change vs 0.1.x where this returned only error.
+func (c *Client) ClearMemories(ctx context.Context, bucket string) (*ClearMemoriesResult, error) {
 	// Require an explicit bucket — defaulting an empty string to "default"
 	// the way StoreMemory does is unsafe for a destructive op, and an empty
 	// string would otherwise hit /v1/buckets//memories.
 	if bucket == "" {
-		return fmt.Errorf("engram: ClearMemories requires a non-empty bucket name")
+		return nil, fmt.Errorf("engram: ClearMemories requires a non-empty bucket name")
 	}
-	return c.request(ctx, http.MethodDelete,
+	var out ClearMemoriesResult
+	if err := c.request(ctx, http.MethodDelete,
 		"/v1/buckets/"+url.PathEscape(bucket)+"/memories",
-		nil, nil, nil)
+		nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ---------- query ----------

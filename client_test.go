@@ -181,10 +181,14 @@ func TestDeleteMemory(t *testing.T) {
 
 func TestClearMemories(t *testing.T) {
 	c, captured := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+		_, _ = w.Write([]byte(`{"success":true,"cleared_count":7}`))
 	})
-	if err := c.ClearMemories(context.Background(), "b"); err != nil {
+	res, err := c.ClearMemories(context.Background(), "b")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if res == nil || !res.Success || res.ClearedCount != 7 {
+		t.Errorf("ClearMemories result = %+v, want {Success:true ClearedCount:7}", res)
 	}
 	if (*captured)[0].URL.Path != "/v1/buckets/b/memories" {
 		t.Errorf("path = %s", (*captured)[0].URL.Path)
@@ -363,7 +367,7 @@ func TestUserAgentDefault(t *testing.T) {
 	c, captured := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
 	})
-	_ = c.ClearMemories(context.Background(), "b")
+	_, _ = c.ClearMemories(context.Background(), "b")
 	got := (*captured)[0].Header.Get("User-Agent")
 	if !strings.HasPrefix(got, "engram-go/") {
 		t.Errorf("User-Agent = %q", got)
@@ -374,7 +378,7 @@ func TestClearMemories_EmptyBucketErrors(t *testing.T) {
 	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("server should not be called when bucket is empty; got %s %s", r.Method, r.URL.Path)
 	})
-	if err := c.ClearMemories(context.Background(), ""); err == nil {
+	if _, err := c.ClearMemories(context.Background(), ""); err == nil {
 		t.Fatal("expected error for empty bucket, got nil")
 	}
 }

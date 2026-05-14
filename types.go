@@ -38,11 +38,22 @@ type RetrievedMemory struct {
 	Bucket  string   `json:"bucket,omitempty"`
 }
 
+// GraphFact is a single (subject, predicate, object) triple surfaced in a
+// query explanation. The server emits objects (not strings) — typing this as
+// []string previously caused every Query with ReturnExplanation=true to fail
+// JSON decoding.
+type GraphFact struct {
+	Subject    string `json:"subject"`
+	Predicate  string `json:"predicate"`
+	Object     string `json:"object"`
+	BucketName string `json:"bucket_name,omitempty"`
+}
+
 // QueryExplanation explains where a query answer came from.
 type QueryExplanation struct {
 	RetrievedMemories []RetrievedMemory `json:"retrieved_memories,omitempty"`
 	Profile           *string           `json:"profile,omitempty"`
-	GraphFacts        []string          `json:"graph_facts,omitempty"`
+	GraphFacts        []GraphFact       `json:"graph_facts,omitempty"`
 }
 
 // QueryUsage reports LLM token usage for the server-side synthesis call.
@@ -87,6 +98,13 @@ type ListMemoriesResult struct {
 	Total    int      `json:"total"`
 	Limit    int      `json:"limit"`
 	Offset   int      `json:"offset"`
+}
+
+// ClearMemoriesResult is the response from ClearMemories. cleared_count
+// is the number of memories actually deleted (server-reported).
+type ClearMemoriesResult struct {
+	Success      bool `json:"success"`
+	ClearedCount int  `json:"cleared_count"`
 }
 
 // ProfileResult is the response from GetProfile / RegenerateProfile.
