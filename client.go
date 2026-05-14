@@ -243,6 +243,12 @@ func (c *Client) DeleteMemory(ctx context.Context, memoryID, bucket string) erro
 
 // ClearMemories removes every memory in bucket. Destructive.
 func (c *Client) ClearMemories(ctx context.Context, bucket string) error {
+	// Require an explicit bucket — defaulting an empty string to "default"
+	// the way StoreMemory does is unsafe for a destructive op, and an empty
+	// string would otherwise hit /v1/buckets//memories.
+	if bucket == "" {
+		return fmt.Errorf("engram: ClearMemories requires a non-empty bucket name")
+	}
 	return c.request(ctx, http.MethodDelete,
 		"/v1/buckets/"+url.PathEscape(bucket)+"/memories",
 		nil, nil, nil)
@@ -322,6 +328,9 @@ func (c *Client) CreateBucket(ctx context.Context, name, description string) (*B
 
 // DeleteBucket removes a bucket and all of its memories.
 func (c *Client) DeleteBucket(ctx context.Context, bucket string) error {
+	if bucket == "" {
+		return fmt.Errorf("engram: DeleteBucket requires a non-empty bucket name")
+	}
 	return c.request(ctx, http.MethodDelete,
 		"/v1/buckets/"+url.PathEscape(bucket),
 		nil, nil, nil)

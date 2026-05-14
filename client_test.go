@@ -368,3 +368,21 @@ func TestUserAgentDefault(t *testing.T) {
 		t.Errorf("User-Agent = %q", got)
 	}
 }
+
+func TestClearMemories_EmptyBucketErrors(t *testing.T) {
+	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("server should not be called when bucket is empty; got %s %s", r.Method, r.URL.Path)
+	})
+	if err := c.ClearMemories(context.Background(), ""); err == nil {
+		t.Fatal("expected error for empty bucket, got nil")
+	}
+}
+
+func TestDeleteBucket_EmptyBucketErrors(t *testing.T) {
+	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("server should not be called when bucket is empty; got %s %s", r.Method, r.URL.Path)
+	})
+	if err := c.DeleteBucket(context.Background(), ""); err == nil {
+		t.Fatal("expected error for empty bucket, got nil")
+	}
+}
