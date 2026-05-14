@@ -75,27 +75,31 @@ engram.NewClient(engram.Options{
 
 All methods take `ctx context.Context` as the first argument.
 
+For every method below, passing `bucket == ""` is shorthand for `"default"` — except for `ClearMemories` and `DeleteBucket`, which **require an explicit non-empty bucket** to prevent accidental data loss.
+
 ### Memories
-- `StoreMemory(ctx, content, bucket)` — store a single fact
-- `StoreMemories(ctx, contents, bucket)` — batched store
-- `ListMemories(ctx, bucket, opts)` — paginated list (`ListMemoriesOptions{Limit, Offset}`)
-- `DeleteMemory(ctx, memoryID, bucket)` — delete one memory
-- `ClearMemories(ctx, bucket)` — delete every memory in a bucket
+- `StoreMemory(ctx, content, bucket)` — store a single fact (`bucket == ""` ⇒ `"default"`)
+- `StoreMemories(ctx, contents, bucket)` — batched store (`bucket == ""` ⇒ `"default"`)
+- `ListMemories(ctx, bucket, opts)` — paginated list. `opts` is `ListMemoriesOptions{Limit, Offset}` — `Limit` defaults to 20, `Offset` to 0.
+- `DeleteMemory(ctx, memoryID, bucket)` — delete one memory (`bucket == ""` ⇒ `"default"`)
+- `ClearMemories(ctx, bucket)` — delete every memory in a bucket. **Empty bucket is rejected.**
 
 ### Query
 - `Query(ctx, question, opts)` where `opts` is `QueryOptions{Buckets, TopK, SkipSynthesis, ReturnExplanation}`
-  - `Buckets` fuses across multiple buckets in one call (defaults to `["default"]`)
-  - `SkipSynthesis: true` returns retrieval-only — `Answer` will be empty
+  - `Buckets` fuses across multiple buckets in one call. Defaults to `[]string{"default"}`.
+  - `TopK` defaults to 8.
+  - `SkipSynthesis: true` returns retrieval-only — `Answer` will be empty. Defaults to `false`.
+  - `ReturnExplanation` defaults to `true`.
   - response shape: `{Answer, Explanation: {RetrievedMemories, Profile, GraphFacts}, Usage}`
 
 ### Buckets
 - `ListBuckets(ctx)` — all buckets in your tenant
 - `CreateBucket(ctx, name, description)` — `description` may be `""`
-- `DeleteBucket(ctx, bucket)`
+- `DeleteBucket(ctx, bucket)` — **Empty bucket is rejected.**
 
 ### Profile
-- `GetProfile(ctx, bucket)` — the canonical profile prepended to recall
-- `RegenerateProfile(ctx, bucket)` — rebuild from current memories (synchronous, can take seconds)
+- `GetProfile(ctx, bucket)` — the canonical profile prepended to recall (`bucket == ""` ⇒ `"default"`)
+- `RegenerateProfile(ctx, bucket)` — rebuild from current memories (synchronous, can take seconds; `bucket == ""` ⇒ `"default"`)
 
 ## Errors
 

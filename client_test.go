@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testServer spins up an httptest server and returns a client pointed at it,
@@ -384,5 +385,70 @@ func TestDeleteBucket_EmptyBucketErrors(t *testing.T) {
 	})
 	if err := c.DeleteBucket(context.Background(), ""); err == nil {
 		t.Fatal("expected error for empty bucket, got nil")
+	}
+}
+
+func TestCreateBucket_EmptyDescriptionOmitsField(t *testing.T) {
+	c, captured := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"x","name":"team"}`))
+	})
+	if _, err := c.CreateBucket(context.Background(), "team", ""); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll((*captured)[0].Body)
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := decoded["description"]; present {
+		t.Errorf("description field should be omitted when empty; got body = %s", string(body))
+	}
+	if decoded["name"] != "team" {
+		t.Errorf("name = %v", decoded["name"])
+	}
+}
+
+func TestPathEscaping_BucketAndMemoryWithSpecialChars(t *testing.T) {
+	c, captured := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"m","bucket_name":"x","token_count":1}`))
+	})
+	// Bucket and memory ID with spaces, slashes, and percent signs that
+	// must be percent-encoded.
+	if _, err := c.StoreMemory(context.Background(), "hi", "user 123/spaces%"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteMemory(context.Background(), "mem id/raw%", "user 123/spaces%"); err != nil {
+		t.Fatal(err)
+	}
+	storePath := (*captured)[0].URL.EscapedPath()
+	delPath := (*captured)[1].URL.EscapedPath()
+	if !strings.Contains(storePath, "user%20123%2Fspaces%25") {
+		t.Errorf("store path not escaped: %s", storePath)
+	}
+	if !strings.Contains(delPath, "mem%20id%2Fraw%25") {
+		t.Errorf("delete memory id not escaped: %s", delPath)
+	}
+}
+
+func TestDefaultTimeout_AppliedWhenHTTPClientNil(t *testing.T) {
+	// No HTTPClient passed: NewClient should construct one with DefaultTimeout.
+	c, err := NewClient(Options{APIKey: "eng_live_x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.http == nil {
+		t.Fatal("expected an http.Client to be constructed")
+	}
+	if c.http.Timeout != DefaultTimeout {
+		t.Errorf("default timeout = %v, want %v", c.http.Timeout, DefaultTimeout)
+	}
+
+	// And a custom Timeout flows through.
+	c2, err := NewClient(Options{APIKey: "eng_live_x", Timeout: 7 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.http.Timeout != 7*time.Second {
+		t.Errorf("custom timeout = %v, want %v", c2.http.Timeout, 7*time.Second)
 	}
 }
