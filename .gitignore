@@ -9,3 +9,4 @@ vendor/
 .idea/
 .vscode/
 .DS_Store
+examples/openai-tools/openai-tools
