@@ -57,6 +57,10 @@ func main() {
 }
 ```
 
+### Automatic 429 retry
+
+The Engram API enforces a per-tenant concurrent-request cap and returns `429 Too Many Requests` with a `Retry-After` header when you exceed it. The client honors that header automatically (up to `MaxRetriesOn429` attempts, default 3, capped at 30s per sleep) so bursty workloads don't fail on the first contention spike. Pass a negative value in `Options.MaxRetriesOn429` to opt out and surface 429 as `*engram.Error` immediately.
+
 ## Configuration
 
 ```go

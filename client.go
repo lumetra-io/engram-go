@@ -48,6 +48,15 @@ const DefaultBaseURL = "https://api.lumetra.io"
 // DefaultTimeout is the default per-request timeout.
 const DefaultTimeout = 30 * time.Second
 
+// DefaultMaxRetriesOn429 is the default retry budget when the server
+// returns a 429 (per-tenant concurrent-request cap). Callers can
+// override via Options.MaxRetriesOn429. Set to 0 to disable retry.
+const DefaultMaxRetriesOn429 = 3
+
+// retryAfterCap bounds the per-attempt sleep duration so a misconfigured
+// server can't force callers to wait minutes between retries.
+const retryAfterCap = 30 * time.Second
+
 // Options configures a Client.
 type Options struct {
 	// APIKey looks like "eng_live_...". If empty, falls back to ENGRAM_API_KEY.
@@ -64,15 +73,22 @@ type Options struct {
 	Timeout time.Duration
 	// UserAgent overrides the default User-Agent header.
 	UserAgent string
+	// MaxRetriesOn429 is the retry budget for HTTP 429 responses (the
+	// per-tenant concurrent-request cap). The client honors the server's
+	// Retry-After header on each retry, capped at 30s per attempt.
+	// Zero falls back to DefaultMaxRetriesOn429. Use a negative value
+	// to disable retry and surface 429 on the first attempt.
+	MaxRetriesOn429 int
 }
 
 // Client is a synchronous Engram API client. Methods are safe for concurrent
 // use by multiple goroutines.
 type Client struct {
-	apiKey    string
-	baseURL   string
-	http      *http.Client
-	userAgent string
+	apiKey          string
+	baseURL         string
+	http            *http.Client
+	userAgent       string
+	maxRetriesOn429 int
 }
 
 // NewClient builds a Client from Options. Returns an error if no API key is
@@ -109,12 +125,40 @@ func NewClient(opts Options) (*Client, error) {
 		ua = "engram-go/" + Version
 	}
 
+	maxRetries := opts.MaxRetriesOn429
+	switch {
+	case maxRetries < 0:
+		maxRetries = 0
+	case maxRetries == 0:
+		maxRetries = DefaultMaxRetriesOn429
+	}
+
 	return &Client{
-		apiKey:    apiKey,
-		baseURL:   baseURL,
-		http:      httpClient,
-		userAgent: ua,
+		apiKey:          apiKey,
+		baseURL:         baseURL,
+		http:            httpClient,
+		userAgent:       ua,
+		maxRetriesOn429: maxRetries,
 	}, nil
+}
+
+// parseRetryAfter resolves a Retry-After header (seconds form) into a
+// sleep duration, capped at retryAfterCap. Falls back to the supplied
+// default when the header is missing or malformed.
+func parseRetryAfter(header string, defaultBackoff time.Duration) time.Duration {
+	if header != "" {
+		if seconds, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && seconds >= 0 {
+			d := time.Duration(seconds) * time.Second
+			if d > retryAfterCap {
+				return retryAfterCap
+			}
+			return d
+		}
+	}
+	if defaultBackoff > retryAfterCap {
+		return retryAfterCap
+	}
+	return defaultBackoff
 }
 
 // ---------- transport ----------
@@ -134,45 +178,84 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 		reqBody = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, u, reqBody)
-	if err != nil {
-		return fmt.Errorf("engram: build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", c.userAgent)
+	// We need to be able to re-issue the request on 429, so buffer
+	// the body bytes once and rebuild a fresh *http.Request per attempt
+	// (http.Request bodies aren't safely re-readable after Do).
+	var bodyBytes []byte
 	if reqBody != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("engram: request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("engram: read response: %w", err)
-	}
-
-	var parsed any
-	if len(raw) > 0 {
-		if jerr := json.Unmarshal(raw, &parsed); jerr != nil {
-			parsed = string(raw)
+		buf, err := io.ReadAll(reqBody)
+		if err != nil {
+			return fmt.Errorf("engram: read request body: %w", err)
 		}
+		bodyBytes = buf
 	}
 
-	if resp.StatusCode >= 400 {
-		return newError(resp.StatusCode, parsed)
-	}
+	attemptsRemaining := c.maxRetriesOn429
+	backoff := time.Second
 
-	if out != nil && len(raw) > 0 {
-		if err := json.Unmarshal(raw, out); err != nil {
-			return fmt.Errorf("engram: decode response: %w", err)
+	for {
+		var attemptBody io.Reader
+		if bodyBytes != nil {
+			attemptBody = bytes.NewReader(bodyBytes)
 		}
+		req, err := http.NewRequestWithContext(ctx, method, u, attemptBody)
+		if err != nil {
+			return fmt.Errorf("engram: build request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", c.userAgent)
+		if bodyBytes != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return fmt.Errorf("engram: request: %w", err)
+		}
+
+		if resp.StatusCode == 429 && attemptsRemaining > 0 {
+			retryAfter := resp.Header.Get("Retry-After")
+			// Drain so net/http can reuse the connection on the retry.
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			delay := parseRetryAfter(retryAfter, backoff)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			attemptsRemaining--
+			if backoff *= 2; backoff > retryAfterCap {
+				backoff = retryAfterCap
+			}
+			continue
+		}
+
+		raw, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("engram: read response: %w", err)
+		}
+
+		var parsed any
+		if len(raw) > 0 {
+			if jerr := json.Unmarshal(raw, &parsed); jerr != nil {
+				parsed = string(raw)
+			}
+		}
+
+		if resp.StatusCode >= 400 {
+			return newError(resp.StatusCode, parsed)
+		}
+
+		if out != nil && len(raw) > 0 {
+			if err := json.Unmarshal(raw, out); err != nil {
+				return fmt.Errorf("engram: decode response: %w", err)
+			}
+		}
+		return nil
 	}
-	return nil
 }
 
 // ---------- memories ----------
@@ -351,46 +434,70 @@ func (c *Client) QueryStream(ctx context.Context, question string, opts QueryOpt
 		return nil, fmt.Errorf("engram: marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/query", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("engram: build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("User-Agent", c.userAgent)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("engram: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Buffer the error body so the caller gets the same Error
-		// shape they'd see from the non-streaming Query() path.
-		errBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		var parsed any
-		if len(errBody) > 0 {
-			_ = json.Unmarshal(errBody, &parsed)
+	// 429-aware retry at connection-open only. Once the response body
+	// starts flowing we can't resume mid-stream safely.
+	attemptsRemaining := c.maxRetriesOn429
+	backoff := time.Second
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			c.baseURL+"/v1/query", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("engram: build request: %w", err)
 		}
-		detail := errBody
-		if m, ok := parsed.(map[string]any); ok {
-			if e, ok := m["error"].(string); ok {
-				detail = []byte(e)
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("User-Agent", c.userAgent)
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("engram: %w", err)
+		}
+
+		if resp.StatusCode == 429 && attemptsRemaining > 0 {
+			retryAfter := resp.Header.Get("Retry-After")
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			delay := parseRetryAfter(retryAfter, backoff)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			attemptsRemaining--
+			if backoff *= 2; backoff > retryAfterCap {
+				backoff = retryAfterCap
+			}
+			continue
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			// Buffer the error body so the caller gets the same Error
+			// shape they'd see from the non-streaming Query() path.
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			var parsed any
+			if len(errBody) > 0 {
+				_ = json.Unmarshal(errBody, &parsed)
+			}
+			detail := errBody
+			if m, ok := parsed.(map[string]any); ok {
+				if e, ok := m["error"].(string); ok {
+					detail = []byte(e)
+				}
+			}
+			return nil, &Error{
+				Status:  resp.StatusCode,
+				Message: fmt.Sprintf("Engram API %d: %s", resp.StatusCode, string(detail)),
+				Body:    parsed,
 			}
 		}
-		return nil, &Error{
-			Status:  resp.StatusCode,
-			Message: fmt.Sprintf("Engram API %d: %s", resp.StatusCode, string(detail)),
-			Body:    parsed,
-		}
-	}
 
-	return &QueryStreamResult{
-		resp:    resp,
-		scanner: bufio.NewScanner(resp.Body),
-	}, nil
+		return &QueryStreamResult{
+			resp:    resp,
+			scanner: bufio.NewScanner(resp.Body),
+		}, nil
+	}
 }
 
 // QueryStreamResult is the iterator returned by Client.QueryStream. Use
