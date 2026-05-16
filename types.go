@@ -56,11 +56,21 @@ type QueryExplanation struct {
 	GraphFacts        []GraphFact       `json:"graph_facts,omitempty"`
 }
 
-// QueryUsage reports LLM token usage for the server-side synthesis call.
+// QueryUsage reports token usage for a query. InputTokens / OutputTokens
+// are the customer-facing counts (their question + the model's answer).
+// ContextTokens is the size of the retrieved context the server added on
+// top of the question. ActualInputTokens / ActualOutputTokens are the
+// raw counts the underlying LLM saw — useful for cost reconciliation.
+//
+// Field-tag change vs 0.2.x: previously the tags read prompt_tokens /
+// completion_tokens, which never matched the server response, so
+// QueryUsage values silently decoded as zeros. 0.3.0 fixes the tags.
 type QueryUsage struct {
-	PromptTokens     int `json:"prompt_tokens,omitempty"`
-	CompletionTokens int `json:"completion_tokens,omitempty"`
-	TotalTokens      int `json:"total_tokens,omitempty"`
+	InputTokens        int `json:"input_tokens,omitempty"`
+	OutputTokens       int `json:"output_tokens,omitempty"`
+	ContextTokens      int `json:"context_tokens,omitempty"`
+	ActualInputTokens  int `json:"actual_input_tokens,omitempty"`
+	ActualOutputTokens int `json:"actual_output_tokens,omitempty"`
 }
 
 // QueryResult is the response from Query.
@@ -114,3 +124,17 @@ type ProfileResult struct {
 
 // BoolPtr is a tiny helper for setting *bool fields in option structs.
 func BoolPtr(b bool) *bool { return &b }
+
+// QueryStreamEvent is one frame yielded by Client.QueryStream. Two
+// shapes share this struct, discriminated by Type:
+//   - Type == "delta" — Content holds an incremental piece of the answer.
+//   - Type == "done"  — Usage / SynthesisUsage / Explanation hold the
+//     final synthesis usage and (optionally) retrieval explanation.
+//     Emitted exactly once at the end of the stream.
+type QueryStreamEvent struct {
+	Type            string            `json:"type"`
+	Content         string            `json:"content,omitempty"`
+	Usage           *QueryUsage       `json:"usage,omitempty"`
+	SynthesisUsage  any               `json:"synthesis_usage,omitempty"`
+	Explanation     *QueryExplanation `json:"explanation,omitempty"`
+}

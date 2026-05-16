@@ -91,6 +91,38 @@ For every method below, passing `bucket == ""` is shorthand for `"default"` — 
   - `SkipSynthesis: true` returns retrieval-only — `Answer` will be empty. Defaults to `false`.
   - `ReturnExplanation` defaults to `true`.
   - response shape: `{Answer, Explanation: {RetrievedMemories, Profile, GraphFacts}, Usage}`
+- `QueryStream(ctx, question, opts)` — same args, returns `*QueryStreamResult` for incremental delivery
+
+## Streaming
+
+For broad questions, synthesis can take 10–25 seconds. `QueryStream` returns a `bufio.Scanner`-style iterator that surfaces the answer as it's produced:
+
+```go
+stream, err := client.QueryStream(ctx, "Summarize what I worked on this week",
+    engram.QueryOptions{Buckets: []string{"work"}})
+if err != nil { return err }
+defer stream.Close()
+
+for stream.Next() {
+    ev := stream.Event()
+    switch ev.Type {
+    case "delta":
+        fmt.Print(ev.Content)
+    case "done":
+        fmt.Println()
+        if ev.Usage != nil {
+            fmt.Printf("Used %d tokens\n", ev.Usage.OutputTokens)
+        }
+    }
+}
+return stream.Err()
+```
+
+Two event types (discriminated by `Type`):
+- `"delta"` — `Content` holds an incremental piece of the answer. Zero or more, in order.
+- `"done"` — `Usage` / `SynthesisUsage` / `Explanation` hold the final synthesis usage and (optional) retrieval explanation. Emitted exactly once at the end.
+
+The initial error returned from `QueryStream` covers connection / non-2xx responses; mid-stream errors surface via `stream.Err()` after `Next()` returns `false`. Always `defer stream.Close()` to release the underlying connection.
 
 ### Buckets
 - `ListBuckets(ctx)` — all buckets in your tenant

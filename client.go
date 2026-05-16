@@ -24,6 +24,7 @@
 package engram
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -39,7 +40,7 @@ import (
 )
 
 // Version is the released semver of this client.
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 // DefaultBaseURL is the production Engram API endpoint.
 const DefaultBaseURL = "https://api.lumetra.io"
@@ -295,6 +296,250 @@ func (c *Client) Query(ctx context.Context, question string, opts QueryOptions) 
 		return nil, err
 	}
 	return &out, nil
+}
+
+// QueryStream is the streaming variant of Query. It returns a
+// *QueryStreamResult that callers iterate with bufio.Scanner-style
+// Next() / Event() / Err() / Close().
+//
+// Usage:
+//
+//	stream, err := client.QueryStream(ctx, "...", engram.QueryOptions{
+//	    Buckets: []string{"default"},
+//	})
+//	if err != nil { return err }
+//	defer stream.Close()
+//	for stream.Next() {
+//	    ev := stream.Event()
+//	    switch ev.Type {
+//	    case "delta":
+//	        fmt.Print(ev.Content)
+//	    case "done":
+//	        fmt.Println("usage:", ev.Usage)
+//	    }
+//	}
+//	return stream.Err()
+//
+// The initial error covers connection / HTTP-status failures; mid-stream
+// errors surface via Err() after Next() returns false.
+func (c *Client) QueryStream(ctx context.Context, question string, opts QueryOptions) (*QueryStreamResult, error) {
+	buckets := opts.Buckets
+	if len(buckets) == 0 {
+		buckets = []string{"default"}
+	}
+	topK := opts.TopK
+	if topK == 0 {
+		topK = 8
+	}
+	returnExplanation := true
+	if opts.ReturnExplanation != nil {
+		returnExplanation = *opts.ReturnExplanation
+	}
+
+	body := map[string]any{
+		"query":   question,
+		"buckets": buckets,
+		"stream":  true,
+		"options": map[string]any{
+			"top_k":              topK,
+			"return_explanation": returnExplanation,
+			"skip_synthesis":     opts.SkipSynthesis,
+		},
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("engram: marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/v1/query", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("engram: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("User-Agent", c.userAgent)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("engram: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Buffer the error body so the caller gets the same Error
+		// shape they'd see from the non-streaming Query() path.
+		errBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var parsed any
+		if len(errBody) > 0 {
+			_ = json.Unmarshal(errBody, &parsed)
+		}
+		detail := errBody
+		if m, ok := parsed.(map[string]any); ok {
+			if e, ok := m["error"].(string); ok {
+				detail = []byte(e)
+			}
+		}
+		return nil, &Error{
+			Status:  resp.StatusCode,
+			Message: fmt.Sprintf("Engram API %d: %s", resp.StatusCode, string(detail)),
+			Body:    parsed,
+		}
+	}
+
+	return &QueryStreamResult{
+		resp:    resp,
+		scanner: bufio.NewScanner(resp.Body),
+	}, nil
+}
+
+// QueryStreamResult is the iterator returned by Client.QueryStream. Use
+// Next() to advance, Event() to read the current event, Err() to check
+// for mid-stream errors, and Close() to release the underlying
+// connection (deferred call recommended).
+type QueryStreamResult struct {
+	resp    *http.Response
+	scanner *bufio.Scanner
+	current QueryStreamEvent
+	err     error
+	done    bool
+}
+
+// Next advances to the next event. Returns false when the stream ends
+// (either naturally with a [DONE] sentinel, or because of an error —
+// check Err() in the latter case).
+func (s *QueryStreamResult) Next() bool {
+	if s.done {
+		return false
+	}
+	// SSE frames are separated by blank lines. Each frame's data line
+	// looks like "data: <json>" (or "data: [DONE]"). We accumulate
+	// data: lines until a blank line, then parse.
+	var dataBuf strings.Builder
+	for s.scanner.Scan() {
+		line := s.scanner.Text()
+		if line == "" {
+			// End of frame. If we collected any data, parse it.
+			if dataBuf.Len() == 0 {
+				// Empty frame; keep scanning.
+				continue
+			}
+			payload := dataBuf.String()
+			dataBuf.Reset()
+			if payload == "[DONE]" {
+				s.done = true
+				return false
+			}
+			// OpenAI-style chunk: {"choices":[{"delta":{"content":"..."}}]}
+			// Or final frame: {"usage":...,"synthesis_usage":...,"explanation":...}
+			// Or error frame: {"error":"..."}
+			var raw map[string]any
+			if jerr := json.Unmarshal([]byte(payload), &raw); jerr != nil {
+				// Malformed frame; skip rather than abort the whole stream.
+				continue
+			}
+			if eMsg, ok := raw["error"].(string); ok {
+				s.err = &Error{Status: 0, Message: eMsg, Body: raw}
+				s.done = true
+				return false
+			}
+			if choices, ok := raw["choices"].([]any); ok && len(choices) > 0 {
+				if first, ok := choices[0].(map[string]any); ok {
+					if delta, ok := first["delta"].(map[string]any); ok {
+						if content, ok := delta["content"].(string); ok && content != "" {
+							s.current = QueryStreamEvent{Type: "delta", Content: content}
+							return true
+						}
+					}
+				}
+				// Empty delta — keep scanning.
+				continue
+			}
+			// Final usage / explanation frame. Re-decode strict to
+			// preserve nested structure (QueryUsage / QueryExplanation).
+			var final QueryStreamEvent
+			if jerr := json.Unmarshal([]byte(payload), &final); jerr == nil {
+				final.Type = "done"
+				s.current = final
+				return true
+			}
+			// If strict decode fails, fall through with a generic done
+			// event carrying whatever fields we could pull out.
+			s.current = QueryStreamEvent{Type: "done"}
+			return true
+		}
+		if strings.HasPrefix(line, "data: ") {
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteByte('\n')
+			}
+			dataBuf.WriteString(line[6:])
+		} else if strings.HasPrefix(line, "data:") {
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteByte('\n')
+			}
+			dataBuf.WriteString(line[5:])
+		}
+		// Ignore comment / event: / id: lines — we don't use them.
+	}
+	// Scanner stopped: either EOF or an error.
+	if err := s.scanner.Err(); err != nil {
+		s.err = fmt.Errorf("engram: stream read: %w", err)
+	}
+	// Flush trailing data buffer (servers that don't terminate with a
+	// blank line).
+	if dataBuf.Len() > 0 {
+		payload := dataBuf.String()
+		if payload != "[DONE]" {
+			var raw map[string]any
+			if jerr := json.Unmarshal([]byte(payload), &raw); jerr == nil {
+				if choices, ok := raw["choices"].([]any); ok && len(choices) > 0 {
+					if first, ok := choices[0].(map[string]any); ok {
+						if delta, ok := first["delta"].(map[string]any); ok {
+							if content, ok := delta["content"].(string); ok && content != "" {
+								s.current = QueryStreamEvent{Type: "delta", Content: content}
+								s.done = true
+								return true
+							}
+						}
+					}
+				}
+				var final QueryStreamEvent
+				if jerr := json.Unmarshal([]byte(payload), &final); jerr == nil {
+					final.Type = "done"
+					s.current = final
+					s.done = true
+					return true
+				}
+			}
+		}
+	}
+	s.done = true
+	return false
+}
+
+// Event returns the event produced by the most recent successful Next()
+// call. Calling Event() before Next() returns true is undefined.
+func (s *QueryStreamResult) Event() QueryStreamEvent {
+	return s.current
+}
+
+// Err returns the first non-nil error encountered while streaming, if
+// any. Call after Next() returns false to distinguish a clean end-of-
+// stream from a mid-stream failure.
+func (s *QueryStreamResult) Err() error {
+	return s.err
+}
+
+// Close releases the underlying HTTP connection. Always defer this
+// after a successful QueryStream call, even if you iterate to natural
+// completion — it returns the connection to the keep-alive pool.
+func (s *QueryStreamResult) Close() error {
+	if s.resp != nil && s.resp.Body != nil {
+		// Drain any unread bytes so net/http can reuse the connection.
+		_, _ = io.Copy(io.Discard, s.resp.Body)
+		return s.resp.Body.Close()
+	}
+	return nil
 }
 
 // ---------- buckets ----------
