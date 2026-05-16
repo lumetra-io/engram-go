@@ -2,8 +2,12 @@ package engram
 
 // Bucket is a memory namespace.
 type Bucket struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// BucketName mirrors Name. The server emits both so callers
+	// iterating both ListBuckets and StoreMemory responses can use one
+	// field name. Prefer Name in new code.
+	BucketName  string  `json:"bucket_name,omitempty"`
 	Description *string `json:"description,omitempty"`
 	CreatedAt   string  `json:"created_at"`
 	MemoryCount *int    `json:"memory_count,omitempty"`
@@ -20,7 +24,10 @@ type Memory struct {
 
 // StoreMemoryResult is returned by StoreMemory.
 type StoreMemoryResult struct {
-	ID         string `json:"id"`
+	ID string `json:"id"`
+	// MemoryID is an alias for ID — older API docs / older SDKs
+	// referenced this name. Always present; prefer ID in new code.
+	MemoryID   string `json:"memory_id,omitempty"`
 	BucketName string `json:"bucket_name"`
 	TokenCount int    `json:"token_count"`
 }
@@ -75,9 +82,14 @@ type QueryUsage struct {
 
 // QueryResult is the response from Query.
 type QueryResult struct {
-	Answer      string            `json:"answer"`
-	Explanation *QueryExplanation `json:"explanation,omitempty"`
-	Usage       *QueryUsage       `json:"usage,omitempty"`
+	Answer string `json:"answer"`
+	// MemoriesFound is the top-level count of retrieved memories.
+	// Equivalent to len(Explanation.RetrievedMemories) but present even
+	// when ReturnExplanation is false. omitempty so a 0 doesn't shadow
+	// a real "no matches" response.
+	MemoriesFound int               `json:"memories_found,omitempty"`
+	Explanation   *QueryExplanation `json:"explanation,omitempty"`
+	Usage         *QueryUsage       `json:"usage,omitempty"`
 }
 
 // QueryOptions are tunable parameters for Query.

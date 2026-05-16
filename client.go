@@ -40,7 +40,7 @@ import (
 )
 
 // Version is the released semver of this client.
-const Version = "0.3.1"
+const Version = "0.3.2"
 
 // DefaultBaseURL is the production Engram API endpoint.
 const DefaultBaseURL = "https://api.lumetra.io"
