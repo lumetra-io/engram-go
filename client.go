@@ -40,13 +40,21 @@ import (
 )
 
 // Version is the released semver of this client.
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 // DefaultBaseURL is the production Engram API endpoint.
 const DefaultBaseURL = "https://api.lumetra.io"
 
-// DefaultTimeout is the default per-request timeout.
+// DefaultTimeout is the default per-request timeout for buffered calls.
 const DefaultTimeout = 30 * time.Second
+
+// DefaultStreamTimeout is the default total timeout for QueryStream
+// calls. Streaming responses can sit in the prep phase (retrieval +
+// extractor pass + count canonicalization) for 5–15s before the first
+// synthesis token arrives, so the buffered 30s default would leave no
+// headroom for the streamed body. Callers can override via
+// Options.StreamTimeout.
+const DefaultStreamTimeout = 5 * time.Minute
 
 // DefaultMaxRetriesOn429 is the default retry budget when the server
 // returns a 429 (per-tenant concurrent-request cap). Callers can
@@ -68,9 +76,14 @@ type Options struct {
 	// middleware, custom transports). If nil, a client with DefaultTimeout is
 	// constructed.
 	HTTPClient *http.Client
-	// Timeout sets the per-request timeout if HTTPClient is not provided.
-	// Defaults to DefaultTimeout.
+	// Timeout sets the per-request timeout for buffered (non-streaming)
+	// calls if HTTPClient is not provided. Defaults to DefaultTimeout.
 	Timeout time.Duration
+	// StreamTimeout is the total timeout applied to QueryStream calls.
+	// Streaming responses can sit in retrieval + extractor passes for
+	// 5–15s before the first token, so the buffered 30s default would
+	// fire before the body finishes. Defaults to DefaultStreamTimeout.
+	StreamTimeout time.Duration
 	// UserAgent overrides the default User-Agent header.
 	UserAgent string
 	// MaxRetriesOn429 is the retry budget for HTTP 429 responses (the
@@ -87,6 +100,7 @@ type Client struct {
 	apiKey          string
 	baseURL         string
 	http            *http.Client
+	streamHTTP      *http.Client
 	userAgent       string
 	maxRetriesOn429 int
 }
@@ -120,6 +134,19 @@ func NewClient(opts Options) (*Client, error) {
 		httpClient = &http.Client{Timeout: timeout}
 	}
 
+	// Streaming uses a separate client so the buffered Timeout doesn't
+	// cut long synthesis bodies short. If the caller supplied their own
+	// HTTPClient we honor it for streaming too — they took ownership of
+	// the timeout knob.
+	streamHTTPClient := opts.HTTPClient
+	if streamHTTPClient == nil {
+		streamTimeout := opts.StreamTimeout
+		if streamTimeout == 0 {
+			streamTimeout = DefaultStreamTimeout
+		}
+		streamHTTPClient = &http.Client{Timeout: streamTimeout}
+	}
+
 	ua := opts.UserAgent
 	if ua == "" {
 		ua = "engram-go/" + Version
@@ -137,6 +164,7 @@ func NewClient(opts Options) (*Client, error) {
 		apiKey:          apiKey,
 		baseURL:         baseURL,
 		http:            httpClient,
+		streamHTTP:      streamHTTPClient,
 		userAgent:       ua,
 		maxRetriesOn429: maxRetries,
 	}, nil
@@ -449,7 +477,7 @@ func (c *Client) QueryStream(ctx context.Context, question string, opts QueryOpt
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("User-Agent", c.userAgent)
 
-		resp, err := c.http.Do(req)
+		resp, err := c.streamHTTP.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("engram: %w", err)
 		}
