@@ -83,6 +83,7 @@ For every method below, passing `bucket == ""` is shorthand for `"default"` — 
 
 ### Memories
 - `StoreMemory(ctx, content, bucket)` — store a single fact (`bucket == ""` ⇒ `"default"`)
+- `StoreMemoryWithOptions(ctx, content, bucket, StoreMemoryOptions{Dedup: DedupOff})` — store with options. See [Dedup](#dedup) below.
 - `StoreMemories(ctx, contents, bucket)` — batched store (`bucket == ""` ⇒ `"default"`)
 - `ListMemories(ctx, bucket, opts)` — paginated list. `opts` is `ListMemoriesOptions{Limit, Offset}` — `Limit` defaults to 20, `Offset` to 0.
 - `DeleteMemory(ctx, memoryID, bucket)` — delete one memory (`bucket == ""` ⇒ `"default"`)
@@ -96,6 +97,24 @@ For every method below, passing `bucket == ""` is shorthand for `"default"` — 
   - `ReturnExplanation` defaults to `true`.
   - response shape: `{Answer, Explanation: {RetrievedMemories, Profile, GraphFacts}, Usage}`
 - `QueryStream(ctx, question, opts)` — same args, returns `*QueryStreamResult` for incremental delivery
+
+## Dedup
+
+The server runs a similarity check before storing. By default (`DedupLoose`, similarity ≥ 0.95) it collapses near-duplicate writes into the existing memory so re-ingesting the same source doesn't bloat the bucket.
+
+For templated time-series content where rows are structurally similar but each carries unique values, the default collapses real data. Use `DedupOff` to disable.
+
+```go
+r, err := client.StoreMemoryWithOptions(ctx, content, bucket,
+    engram.StoreMemoryOptions{Dedup: engram.DedupOff})
+if err != nil { return err }
+if r.Status == "merged" {
+    log.Printf("merged into %s (%s, sim=%.3f)",
+        r.DedupedInto, r.MergeReason, r.SimilarityScore)
+}
+```
+
+`MergeReason` is one of `content_hash`, `embedding_similarity`, `conflict_keep_existing`, `concurrent_insert_race`. `DedupStrict` is a middle ground — only collapses near-identical content (≥ 0.99).
 
 ## Streaming
 

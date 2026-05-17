@@ -30,7 +30,42 @@ type StoreMemoryResult struct {
 	MemoryID   string `json:"memory_id,omitempty"`
 	BucketName string `json:"bucket_name"`
 	TokenCount int    `json:"token_count"`
+	// Status is "stored" for fresh writes and "merged" when the
+	// server collapsed this write into a pre-existing memory via
+	// dedup. Always present in responses from servers >= 0.x.y.
+	Status string `json:"status,omitempty"`
+	// DedupedInto is the ID of the canonical memory this write was
+	// absorbed into. Present only when Status == "merged".
+	DedupedInto string `json:"deduped_into,omitempty"`
+	// SimilarityScore is the [0.0, 1.0] match score that triggered
+	// the merge (1.0 for content-hash matches). Present only when
+	// Status == "merged".
+	SimilarityScore float64 `json:"similarity_score,omitempty"`
+	// MergeReason explains which dedup path fired. One of:
+	// "content_hash", "embedding_similarity", "conflict_keep_existing",
+	// "concurrent_insert_race". Present only when Status == "merged".
+	MergeReason string `json:"merge_reason,omitempty"`
 }
+
+// DedupPolicy values for StoreMemory. Pass "" (the zero value) to let
+// the server use its default (currently "loose"). The constants below
+// are recommended over raw strings for IDE completion.
+type DedupPolicy string
+
+const (
+	// DedupOff stores every write as a new memory. Useful for templated
+	// time-series ingest where structurally similar rows carry unique
+	// values and would otherwise collapse silently.
+	DedupOff DedupPolicy = "off"
+	// DedupLoose is the server's default — merges writes at similarity
+	// ≥ 0.95. Good for narrative content where structurally similar
+	// chunks really are redundant.
+	DedupLoose DedupPolicy = "loose"
+	// DedupStrict only merges near-identical content (≥ 0.99). Keeps
+	// a safety net against exact re-ingest while allowing near-identical
+	// but distinct content (e.g. month-over-month metrics).
+	DedupStrict DedupPolicy = "strict"
+)
 
 // StoreMemoriesResult is returned by StoreMemories (batched).
 type StoreMemoriesResult struct {

@@ -40,7 +40,7 @@ import (
 )
 
 // Version is the released semver of this client.
-const Version = "0.3.2"
+const Version = "0.4.0"
 
 // DefaultBaseURL is the production Engram API endpoint.
 const DefaultBaseURL = "https://api.lumetra.io"
@@ -288,14 +288,42 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 
 // ---------- memories ----------
 
+// StoreMemoryOptions controls per-write store behavior. Only Dedup is
+// surfaced today; the struct exists so future options can be added
+// without breaking the StoreMemory call site.
+type StoreMemoryOptions struct {
+	// Dedup controls server-side deduplication for this write. The
+	// zero value falls back to the server's default ("loose"). See
+	// the DedupOff / DedupLoose / DedupStrict constants and the
+	// DedupPolicy doc for semantics.
+	Dedup DedupPolicy
+}
+
 // StoreMemory stores a single fact in bucket (defaults to "default" if empty).
+// Equivalent to StoreMemoryWithOptions with zero-value StoreMemoryOptions.
 func (c *Client) StoreMemory(ctx context.Context, content, bucket string) (*StoreMemoryResult, error) {
+	return c.StoreMemoryWithOptions(ctx, content, bucket, StoreMemoryOptions{})
+}
+
+// StoreMemoryWithOptions is StoreMemory with per-write options. The
+// returned StoreMemoryResult includes a Status field — "merged" indicates
+// the write was collapsed into an existing memory; check DedupedInto /
+// SimilarityScore / MergeReason for details. Customers ingesting
+// templated time-series data should pass Dedup: DedupOff to keep
+// structurally similar rows from collapsing silently.
+func (c *Client) StoreMemoryWithOptions(
+	ctx context.Context, content, bucket string, opts StoreMemoryOptions,
+) (*StoreMemoryResult, error) {
 	bucket = defaultBucket(bucket)
+	body := map[string]any{"content": content}
+	if opts.Dedup != "" {
+		body["dedup"] = string(opts.Dedup)
+	}
 	var out StoreMemoryResult
 	err := c.request(ctx, http.MethodPost,
 		"/v1/buckets/"+url.PathEscape(bucket)+"/memories",
 		nil,
-		map[string]string{"content": content},
+		body,
 		&out,
 	)
 	if err != nil {
