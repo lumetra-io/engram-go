@@ -89,6 +89,45 @@ For every method below, passing `bucket == ""` is shorthand for `"default"` — 
 - `DeleteMemory(ctx, memoryID, bucket)` — delete one memory (`bucket == ""` ⇒ `"default"`)
 - `ClearMemories(ctx, bucket)` — delete every memory in a bucket. **Empty bucket is rejected.**
 
+### Query knobs
+
+`QueryOptions` now carries additional tuning fields (all optional):
+
+| Field | Type | What it does |
+|---|---|---|
+| `MaxTokens` | `int` | Cap synthesis output. Lower for agent loops / cost control. |
+| `MinSimilarityThreshold` | `float64` | Drop retrieved chunks below this raw cosine similarity. Citations-grade precision. |
+| `TopKPerBucketInt` | `int` | Uniform per-bucket K, applied to every bucket. |
+| `TopKPerBucketMap` | `map[string]int` | Explicit per-bucket K. e.g. `{"edgar_AAPL": 20, "prices_AAPL": 4}`. Map wins if both are set. |
+| `ReturnFormat` | `string` | `"prose"` (default) or `"json"`. When `"json"`, result includes parsed `AnswerJSON`. |
+| `ResponseSchema` | `map[string]any` (JSON Schema) | Hint the model with a target shape. Best-effort. |
+
+Example:
+
+```go
+r, err := client.Query(ctx, "Apple's active legal proceedings",
+    engram.QueryOptions{
+        Buckets:          []string{"edgar_AAPL", "patents_AAPL"},
+        TopKPerBucketMap: map[string]int{"edgar_AAPL": 20, "patents_AAPL": 5},
+        MaxTokens:        400,
+        ReturnFormat:     "json",
+        ResponseSchema: map[string]any{
+            "type": "array",
+            "items": map[string]any{
+                "properties": map[string]any{
+                    "case_name":    map[string]string{"type": "string"},
+                    "jurisdiction": map[string]string{"type": "string"},
+                    "status":       map[string]string{"type": "string"},
+                },
+            },
+        },
+    })
+if err != nil { return err }
+if cases, ok := r.AnswerJSON.([]any); ok {
+    for _, c := range cases { fmt.Println(c) }
+}
+```
+
 ### Query
 - `Query(ctx, question, opts)` where `opts` is `QueryOptions{Buckets, TopK, SkipSynthesis, ReturnExplanation}`
   - `Buckets` fuses across multiple buckets in one call. Defaults to `[]string{"default"}`.

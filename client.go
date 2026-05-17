@@ -40,7 +40,7 @@ import (
 )
 
 // Version is the released semver of this client.
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 // DefaultBaseURL is the production Engram API endpoint.
 const DefaultBaseURL = "https://api.lumetra.io"
@@ -422,11 +422,7 @@ func (c *Client) Query(ctx context.Context, question string, opts QueryOptions) 
 	body := map[string]any{
 		"query":   question,
 		"buckets": buckets,
-		"options": map[string]any{
-			"top_k":              topK,
-			"return_explanation": returnExplanation,
-			"skip_synthesis":     opts.SkipSynthesis,
-		},
+		"options": buildQueryOptionsMap(opts, topK, returnExplanation),
 	}
 
 	var out QueryResult
@@ -435,6 +431,36 @@ func (c *Client) Query(ctx context.Context, question string, opts QueryOptions) 
 		return nil, err
 	}
 	return &out, nil
+}
+
+// buildQueryOptionsMap collapses the public QueryOptions struct into the
+// REST options-map shape. Lives here (instead of inline) because Query
+// and QueryStream both need it. Zero-value fields are omitted so the
+// server uses its defaults.
+func buildQueryOptionsMap(opts QueryOptions, topK int, returnExplanation bool) map[string]any {
+	m := map[string]any{
+		"top_k":              topK,
+		"return_explanation": returnExplanation,
+		"skip_synthesis":     opts.SkipSynthesis,
+	}
+	if opts.MaxTokens > 0 {
+		m["max_tokens"] = opts.MaxTokens
+	}
+	if opts.MinSimilarityThreshold != 0 {
+		m["min_similarity_threshold"] = opts.MinSimilarityThreshold
+	}
+	if opts.TopKPerBucketMap != nil {
+		m["top_k_per_bucket"] = opts.TopKPerBucketMap
+	} else if opts.TopKPerBucketInt > 0 {
+		m["top_k_per_bucket"] = opts.TopKPerBucketInt
+	}
+	if opts.ReturnFormat != "" {
+		m["return_format"] = opts.ReturnFormat
+	}
+	if opts.ResponseSchema != nil {
+		m["response_schema"] = opts.ResponseSchema
+	}
+	return m
 }
 
 // QueryStream is the streaming variant of Query. It returns a
@@ -479,11 +505,7 @@ func (c *Client) QueryStream(ctx context.Context, question string, opts QueryOpt
 		"query":   question,
 		"buckets": buckets,
 		"stream":  true,
-		"options": map[string]any{
-			"top_k":              topK,
-			"return_explanation": returnExplanation,
-			"skip_synthesis":     opts.SkipSynthesis,
-		},
+		"options": buildQueryOptionsMap(opts, topK, returnExplanation),
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {

@@ -118,6 +118,11 @@ type QueryUsage struct {
 // QueryResult is the response from Query.
 type QueryResult struct {
 	Answer string `json:"answer"`
+	// AnswerJSON is the parsed JSON payload when the request set
+	// ReturnFormat="json". The dynamic type is any — typically a
+	// map[string]any or []any depending on the schema. Nil when the
+	// model returned malformed JSON or for prose responses.
+	AnswerJSON any `json:"answer_json,omitempty"`
 	// MemoriesFound is the top-level count of retrieved memories.
 	// Equivalent to len(Explanation.RetrievedMemories) but present even
 	// when ReturnExplanation is false. omitempty so a 0 doesn't shadow
@@ -131,7 +136,9 @@ type QueryResult struct {
 type QueryOptions struct {
 	// Buckets to fuse across. If empty, defaults to []string{"default"}.
 	Buckets []string
-	// TopK is the maximum number of memories to retrieve. Zero defaults to 8.
+	// TopK is the maximum number of memories to retrieve per bucket.
+	// Zero defaults to 8. Used as the fallback K when TopKPerBucket
+	// doesn't cover a bucket.
 	TopK int
 	// SkipSynthesis, if true, returns retrieval-only — server skips the LLM call
 	// and Answer will be empty.
@@ -139,6 +146,27 @@ type QueryOptions struct {
 	// ReturnExplanation populates the Explanation field. Defaults to true (unset
 	// is treated as true via the *bool below).
 	ReturnExplanation *bool
+	// MaxTokens caps synthesis output. Zero leaves the server's default
+	// (currently 8192). Lower for agent loops or cost control.
+	MaxTokens int
+	// MinSimilarityThreshold is a floor for retrieval scores. Pass a
+	// non-zero value to drop chunks below this raw cosine similarity.
+	// Useful for citations-grade output. Zero leaves the server's
+	// adaptive threshold in place.
+	MinSimilarityThreshold float64
+	// TopKPerBucket is per-bucket retrieval depth. Pass an int via
+	// `TopKPerBucketInt` or a map via `TopKPerBucketMap`. Both nil
+	// falls back to TopK for every bucket.
+	TopKPerBucketInt int
+	TopKPerBucketMap map[string]int
+	// ReturnFormat is "prose" (default when empty) or "json". When
+	// "json", the server asks the synthesizer for JSON and the
+	// response includes a parsed AnswerJSON alongside the raw Answer.
+	ReturnFormat string
+	// ResponseSchema is an optional JSON Schema describing the desired
+	// output shape. Included in the prompt to guide the model.
+	// Best-effort — validate client-side if you need strict enforcement.
+	ResponseSchema map[string]any
 }
 
 // ListMemoriesOptions are tunable parameters for ListMemories.
