@@ -149,11 +149,17 @@ type QueryOptions struct {
 	// MaxTokens caps synthesis output. Zero leaves the server's default
 	// (currently 8192). Lower for agent loops or cost control.
 	MaxTokens int
-	// MinSimilarityThreshold is a floor for retrieval scores. Pass a
-	// non-zero value to drop chunks below this raw cosine similarity.
-	// Useful for citations-grade output. Zero leaves the server's
-	// adaptive threshold in place.
+	// MinSimilarityThreshold drops chunks whose **raw cosine similarity**
+	// (the underlying embedding score) is below this value. Useful when
+	// you specifically want a precision floor on the embedding signal.
+	// Zero leaves the server's adaptive threshold in place.
 	MinSimilarityThreshold float64
+	// MinWeightedScore drops chunks whose **weighted_score** (the
+	// post-RRF score surfaced in Explanation.RetrievedMemories) is below
+	// this value. This is the score visible in responses — most callers
+	// want this rather than MinSimilarityThreshold because the scales
+	// match. Zero leaves all chunks in place.
+	MinWeightedScore float64
 	// TopKPerBucket is per-bucket retrieval depth. Pass an int via
 	// `TopKPerBucketInt` or a map via `TopKPerBucketMap`. Both nil
 	// falls back to TopK for every bucket.

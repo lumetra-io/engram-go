@@ -40,7 +40,7 @@ import (
 )
 
 // Version is the released semver of this client.
-const Version = "0.5.0"
+const Version = "0.5.1"
 
 // DefaultBaseURL is the production Engram API endpoint.
 const DefaultBaseURL = "https://api.lumetra.io"
@@ -448,6 +448,9 @@ func buildQueryOptionsMap(opts QueryOptions, topK int, returnExplanation bool) m
 	}
 	if opts.MinSimilarityThreshold != 0 {
 		m["min_similarity_threshold"] = opts.MinSimilarityThreshold
+	}
+	if opts.MinWeightedScore != 0 {
+		m["min_weighted_score"] = opts.MinWeightedScore
 	}
 	if opts.TopKPerBucketMap != nil {
 		m["top_k_per_bucket"] = opts.TopKPerBucketMap
