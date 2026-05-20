@@ -197,11 +197,13 @@ The initial error returned from `QueryStream` covers connection / non-2xx respon
 
 ## Errors
 
-Every non-2xx response returns `*engram.Error`. Use `errors.As`:
+Every non-2xx response returns `*engram.Error`. The error exposes both `Status` (the HTTP status code) and `Body` (the parsed JSON body, or the raw text fallback if the response wasn't JSON) so you can branch on the code and surface server-side detail in logs. Use `errors.As`:
 
 ```go
 import (
     "errors"
+    "log"
+
     engram "github.com/lumetra-io/engram-go"
 )
 
@@ -211,11 +213,12 @@ if err != nil {
     if errors.As(err, &apiErr) {
         switch apiErr.Status {
         case 412:
-            // BYOK not configured — direct user to set a provider key
+            // BYOK not configured; inspect apiErr.Body for details
+            log.Printf("byok required: %v", apiErr.Body)
         case 429:
-            // rate limited
+            log.Printf("rate limited: %v", apiErr.Body)
         default:
-            // other API error
+            log.Printf("engram %d: %v", apiErr.Status, apiErr.Body)
         }
     }
     // else: transport-level error (timeout, DNS, etc.)
