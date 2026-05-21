@@ -72,30 +72,58 @@ type StoreMemoriesResult struct {
 	Memories []StoreMemoryResult `json:"memories"`
 }
 
-// RetrievedMemory is one row from the explanation payload.
+// RetrievedMemory is one row from the explanation payload — a memory that
+// the query retrieved, with the scores it was ranked by.
 type RetrievedMemory struct {
-	ID      string   `json:"id,omitempty"`
-	Content string   `json:"content"`
-	Score   *float64 `json:"score,omitempty"`
-	Bucket  string   `json:"bucket,omitempty"`
+	MemoryID      string         `json:"memory_id"`
+	BucketID      string         `json:"bucket_id,omitempty"`
+	BucketName    string         `json:"bucket_name,omitempty"`
+	Content       string         `json:"content"`
+	RawScore      *float64       `json:"raw_score,omitempty"`
+	Weight        *float64       `json:"weight,omitempty"`
+	WeightedScore *float64       `json:"weighted_score,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
 }
 
 // GraphFact is a single (subject, predicate, object) triple surfaced in a
 // query explanation. The server emits objects (not strings) — typing this as
 // []string previously caused every Query with ReturnExplanation=true to fail
 // JSON decoding.
+//
+// MemoryID cross-references RetrievedMemory.MemoryID so callers can render
+// "answer cited from memory X". May be absent for edges that predate the
+// per-edge memory_id plumbing.
 type GraphFact struct {
-	Subject    string `json:"subject"`
-	Predicate  string `json:"predicate"`
-	Object     string `json:"object"`
-	BucketName string `json:"bucket_name,omitempty"`
+	Subject    string   `json:"subject"`
+	Predicate  string   `json:"predicate"`
+	Object     string   `json:"object"`
+	MemoryID   string   `json:"memory_id,omitempty"`
+	BucketID   string   `json:"bucket_id,omitempty"`
+	BucketName string   `json:"bucket_name,omitempty"`
+	// Depth is hop distance from the seed entity. 0 = direct, 1+ = transitive.
+	// Pointer so depth=0 is preserved instead of being omitted by omitempty.
+	Depth     *int     `json:"depth,omitempty"`
+	Weight    *float64 `json:"weight,omitempty"`
+	Timestamp *string  `json:"timestamp,omitempty"`
+}
+
+// EntityMatch records that an entity from the question text hit the bucket's
+// knowledge graph, kicking off a graph traversal that produced facts.
+type EntityMatch struct {
+	Entity     string   `json:"entity"`
+	BucketName string   `json:"bucket_name,omitempty"`
+	Score      *float64 `json:"score,omitempty"`
 }
 
 // QueryExplanation explains where a query answer came from.
 type QueryExplanation struct {
 	RetrievedMemories []RetrievedMemory `json:"retrieved_memories,omitempty"`
-	Profile           *string           `json:"profile,omitempty"`
 	GraphFacts        []GraphFact       `json:"graph_facts,omitempty"`
+	EntityMatches     []EntityMatch     `json:"entity_matches,omitempty"`
+	// ContextTokens is the token count of the retrieval context fed to the
+	// synthesis pass. Pointer to distinguish "0 tokens" from "field absent".
+	ContextTokens *int    `json:"context_tokens,omitempty"`
+	Profile       *string `json:"profile,omitempty"`
 }
 
 // QueryUsage reports token usage for a query. InputTokens / OutputTokens

@@ -134,7 +134,7 @@ if cases, ok := r.AnswerJSON.([]any); ok {
   - `TopK` defaults to 8.
   - `SkipSynthesis: true` returns retrieval-only — `Answer` will be empty. Defaults to `false`.
   - `ReturnExplanation` defaults to `true`.
-  - response shape: `{Answer, Explanation: {RetrievedMemories, Profile, GraphFacts}, Usage}`
+  - response shape: `{Answer, MemoriesFound, Explanation: {RetrievedMemories, GraphFacts, EntityMatches, ContextTokens, Profile}, Usage}`. Each `GraphFacts[i]` carries a `MemoryID` you can match against `RetrievedMemories[].MemoryID` to render the citing memory.
 - `QueryStream(ctx, question, opts)` — same args, returns `*QueryStreamResult` for incremental delivery
 
 ## Dedup
