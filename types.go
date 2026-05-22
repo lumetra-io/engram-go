@@ -122,8 +122,15 @@ type QueryExplanation struct {
 	EntityMatches     []EntityMatch     `json:"entity_matches,omitempty"`
 	// ContextTokens is the token count of the retrieval context fed to the
 	// synthesis pass. Pointer to distinguish "0 tokens" from "field absent".
-	ContextTokens *int    `json:"context_tokens,omitempty"`
-	Profile       *string `json:"profile,omitempty"`
+	ContextTokens *int `json:"context_tokens,omitempty"`
+	// Profile is the legacy single-bucket profile, kept for backward
+	// compatibility. Prefer Profiles for multi-bucket queries.
+	Profile *string `json:"profile,omitempty"`
+	// Profiles is the multi-bucket profile snapshot map, keyed by bucket
+	// name. Present when the query spanned more than one bucket and each
+	// had an installed profiler. Values are nil when a bucket has no
+	// snapshot yet.
+	Profiles map[string]*string `json:"profiles,omitempty"`
 }
 
 // QueryUsage reports token usage for a query. InputTokens / OutputTokens
@@ -227,8 +234,27 @@ type ClearMemoriesResult struct {
 }
 
 // ProfileResult is the response from GetProfile / RegenerateProfile.
+//
+// Profile is the canonical profile text prepended to recall; nil when the
+// profiler has not yet produced a snapshot. The remaining fields describe
+// *which* snapshot is being returned and the state of the bucket's profiler
+// agent. All fields beyond Profile are optional so older servers that only
+// return {profile} still decode cleanly.
 type ProfileResult struct {
 	Profile *string `json:"profile"`
+	// BucketID is the UUID of the bucket this profile belongs to.
+	BucketID string `json:"bucket_id,omitempty"`
+	// Status is one of "ready", "pending", or "not_installed". Indicates
+	// whether the bucket has a profiler agent installed and whether it has
+	// produced a snapshot yet.
+	Status string `json:"status,omitempty"`
+	// UpdatedAt is the ISO-8601 timestamp of the most recent snapshot.
+	UpdatedAt string `json:"updated_at,omitempty"`
+	// NMemoriesAtGen is the number of memories present at the time the
+	// profile was generated.
+	NMemoriesAtGen int `json:"n_memories_at_gen,omitempty"`
+	// Source is the identifier of the agent/source that produced the snapshot.
+	Source string `json:"source,omitempty"`
 }
 
 // BoolPtr is a tiny helper for setting *bool fields in option structs.

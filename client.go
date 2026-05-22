@@ -792,8 +792,13 @@ func (c *Client) GetProfile(ctx context.Context, bucket string) (*ProfileResult,
 	return &out, nil
 }
 
-// RegenerateProfile rebuilds the profile for bucket from current memories.
-// Synchronous; can take several seconds.
+// RegenerateProfile queues a profile-tick on the bucket's installed Bucket
+// Profiler agent and returns the latest profile snapshot (which may still be
+// the previous one if the new tick is still running).
+//
+// Returns an *EngramError with Status == 412 (BUCKET_PROFILER_NOT_INSTALLED)
+// when the bucket has no profiler agent installed yet — install one first
+// (e.g. via EnsureProfilerAgent / the dashboard).
 func (c *Client) RegenerateProfile(ctx context.Context, bucket string) (*ProfileResult, error) {
 	bucket = defaultBucket(bucket)
 	var out ProfileResult
